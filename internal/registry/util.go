@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -21,7 +22,7 @@ func getFreePort() (int, error) {
 
 // waitPortListening 等待端口监听成功（超时5秒）
 func waitPortListening(host string, port int) error {
-	addr := net.JoinHostPort(host, string(rune(port)))
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	timeout := time.After(5 * time.Second)
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
@@ -54,7 +55,7 @@ func genWorkerdEnv(env map[string]string) string {
 
 // getStorageDir 获取存储目录（配置/代码/日志）
 func getStorageDir() string {
-	dir := filepath.Join(os.TempDir(), "faas-workerd-storage")
+	dir := filepath.Join("faas-workerd-storage")
 	os.MkdirAll(dir, 0755) // 自动创建目录
 	return dir
 }

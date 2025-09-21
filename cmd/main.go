@@ -10,6 +10,7 @@ import (
 
 	"faas/internal/api"      // 替换为实际模块路径
 	"faas/internal/registry" // 替换为实际模块路径
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -65,7 +66,7 @@ func main() {
 	apiGroup := ginEngine.Group("/api")
 	//apiGroup.Use(api.AuthMiddleware()) // 鉴权中间件
 	{
-		apiGroup.POST("/d eploy/:funcName", api.DeployHandler(reg))
+		apiGroup.POST("/deploy/:funcName", api.DeployHandler(reg))
 	}
 
 	go func() {

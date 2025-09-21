@@ -61,13 +61,14 @@ func Default(workerdBin string) *Registry {
 // --------------- 核心方法：生成 workerd 配置与代码文件 ---------------
 func (r *Registry) generateWorkerdFiles(meta *FunctionMetadata) error {
 	// 1. 生成函数代码文件（如 storage/foo.js）
-	codePath := filepath.Join(r.StorageDir, fmt.Sprintf("%s.js", meta.Name))
+	codeFile := fmt.Sprintf("%s.js", meta.Name)
+	codePath := filepath.Join(r.StorageDir, codeFile)
 	if err := os.WriteFile(codePath, []byte(meta.Code), 0644); err != nil {
 		return fmt.Errorf("write code: %w", err)
 	}
 	meta.Workerd.CodePath = codePath
 
-	// 2. 生成 workerd 配置文件（Cap'n Proto 格式）
+	// 2. 生成配置文件（注意 embed 必须是相对路径）
 	confPath := filepath.Join(r.StorageDir, fmt.Sprintf("%s.capnp", meta.Name))
 	confContent := fmt.Sprintf(`
 using Workerd = import "/workerd/workerd.capnp";
@@ -78,11 +79,7 @@ const config :Workerd.Config = (
       name = "%s",
       worker = (
         serviceWorkerScript = embed "%s",
-        compatibilityDate = "2024-05-01",
-        resources = (memory = "128MB"),  # 限制内存128MB
-        env = [
-          %s
-        ]
+        compatibilityDate = "2024-05-01"
       )
     )
   ],
@@ -95,14 +92,14 @@ const config :Workerd.Config = (
     )
   ]
 );
-`, meta.Name, codePath, genWorkerdEnv(meta.EnvVars), meta.Workerd.Port, meta.Name)
+`, meta.Name, codeFile, meta.Workerd.Port, meta.Name)
 
 	if err := os.WriteFile(confPath, []byte(confContent), 0644); err != nil {
 		return fmt.Errorf("write conf: %w", err)
 	}
 	meta.Workerd.ConfPath = confPath
 
-	// 3. 生成日志文件
+	// 3. 生成日志文件路径
 	logPath := filepath.Join(r.StorageDir, fmt.Sprintf("%s.log", meta.Name))
 	meta.Workerd.LogPath = logPath
 	return nil
@@ -117,6 +114,7 @@ func (r *Registry) startWorkerd(meta *FunctionMetadata) error {
 
 	// 启动 workerd 进程（命令：workerd serve 配置文件）
 	cmd := exec.Command(r.workerdBin, "serve", meta.Workerd.ConfPath)
+	fmt.Printf("[DEBUG] Running: %s serve %s\n", r.workerdBin, meta.Workerd.ConfPath)
 	// 重定向日志到文件
 	logFile, err := os.OpenFile(meta.Workerd.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
