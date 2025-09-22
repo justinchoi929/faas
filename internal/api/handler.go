@@ -1,11 +1,9 @@
 package api
 
 import (
-	"net/http"
-	"os"
-
 	"faas/internal/registry" // 替换为实际模块路径
 	"github.com/gin-gonic/gin"
+	"net/http"
 )
 
 // DeployRequest 部署请求体
@@ -19,11 +17,12 @@ type DeployRequest struct {
 
 // AuthMiddleware 鉴权中间件（硬编码 Token，可扩展为用户系统）
 func AuthMiddleware() gin.HandlerFunc {
-	validToken := os.Getenv("FAAS_DEPLOY_TOKEN")
-	if validToken == "" {
-		panic("FAAS_DEPLOY_TOKEN environment variable not set")
-	}
+	//validToken := os.Getenv("FAAS_DEPLOY_TOKEN")
+	//if validToken == "" {
+	//	panic("FAAS_DEPLOY_TOKEN environment variable not set")
+	//}
 
+	validToken := "faasToken"
 	return func(c *gin.Context) {
 		token := c.GetHeader("X-Deploy-Token")
 		if token != validToken {
