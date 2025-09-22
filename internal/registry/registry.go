@@ -3,6 +3,7 @@ package registry
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -120,8 +121,8 @@ func (r *Registry) startWorkerd(meta *FunctionMetadata) error {
 	if err != nil {
 		return fmt.Errorf("open log: %w", err)
 	}
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
+	cmd.Stdout = io.MultiWriter(os.Stdout, logFile)
+	cmd.Stderr = io.MultiWriter(os.Stderr, logFile)
 
 	// 启动进程并记录 PID
 	if err := cmd.Start(); err != nil {
@@ -142,19 +143,39 @@ func (r *Registry) stopWorkerd(meta *FunctionMetadata) error {
 		return nil // 进程未启动
 	}
 
-	// 查找进程并发送终止信号
 	process, err := os.FindProcess(meta.Workerd.Pid)
 	if err != nil {
 		return fmt.Errorf("find process: %w", err)
 	}
+
+	// 检查进程是否还活着
+	err = process.Signal(syscall.Signal(0))
+	if err != nil {
+		if errors.Is(err, os.ErrProcessDone) {
+			// 进程已经结束，不需要停止
+			meta.Workerd.Pid = 0
+			return nil
+		}
+		return fmt.Errorf("check process: %w", err)
+	}
+
+	// 发送终止信号
 	if err := process.Signal(syscall.SIGTERM); err != nil {
+		if errors.Is(err, os.ErrProcessDone) {
+			// 已经结束
+			meta.Workerd.Pid = 0
+			return nil
+		}
 		return fmt.Errorf("send signal: %w", err)
 	}
+
 	// 等待进程退出
 	_, err = process.Wait()
 	if err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return fmt.Errorf("wait exit: %w", err)
 	}
+
+	meta.Workerd.Pid = 0
 	return nil
 }
 
