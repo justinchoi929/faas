@@ -220,6 +220,10 @@ func (r *Registry) RegisterOrUpdate(meta *FunctionMetadata) error {
 			return fmt.Errorf("stop old function: %w", err)
 		}
 		delete(r.subdomainMap, oldMeta.Subdomain)
+		// 保留旧记录主键和域名
+		meta.ID = oldMeta.ID
+		meta.CreatedAt = oldMeta.CreatedAt
+		meta.Subdomain = oldMeta.Subdomain
 	}
 
 	// 启动新函数
