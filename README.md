@@ -1,6 +1,6 @@
-## 2025 BYR Team 后端考核——FaaS
+# 2025 BYR Team 后端考核——FaaS
 
-# 功能测试
+## 功能测试
 
 `/api/deploy/funcname`：
 
@@ -39,12 +39,10 @@ curl http://test.func.local
 Test Success
 ```
 
-# 设计思路
+## 问题
 
-# 问题
+## 优缺点分析
 
-# 优缺点分析
+## 心路历程
 
-# 心路历程
-
-# 人工智能生成部分
+## 人工智能生成部分
