@@ -2,8 +2,12 @@ package api
 
 import (
 	"faas/internal/registry" // 替换为实际模块路径
+	"fmt"
 	"github.com/gin-gonic/gin"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"time"
 )
 
 // DeployRequest 部署请求体
@@ -11,7 +15,7 @@ type DeployRequest struct {
 	Runtime string            `json:"runtime" binding:"required,oneof=js"` // 仅支持 JS
 	Code    string            `json:"code" binding:"required"`             // JS 源码
 	EnvVars map[string]string `json:"env_vars"`                            // 环境变量（可选）
-	Version string            `json:"version"`                             // 版本（可选）
+	Version string            `json:"version"`                             // 版本
 	Alias   string            `json:"alias"`                               // 别名（可选）
 }
 
@@ -44,8 +48,13 @@ func DeployHandler(reg *registry.Registry) gin.HandlerFunc {
 			return
 		}
 
+		// 若版本为空
+		if req.Version == "" {
+			req.Version = time.Now().Format("20060102150405")
+		}
+
 		// 构建函数元数据
-		subdomain := funcName + ".func.local"
+		subdomain := fmt.Sprintf("%s.%s.func.local", req.Version, funcName)
 		meta := &registry.FunctionMetadata{
 			Name:      funcName,
 			Subdomain: subdomain,
@@ -69,6 +78,70 @@ func DeployHandler(reg *registry.Registry) gin.HandlerFunc {
 			"subdomain": subdomain,
 			"accessUrl": "http://" + subdomain,
 			"version":   req.Version,
+			"alias":     req.Alias,
 		})
+	}
+}
+
+// RollbackRequest 回滚请求体
+type RollbackRequest struct {
+	Alias         string `json:"alias" binding:"required"`          // 要修改的别名（如latest）
+	TargetVersion string `json:"target_version" binding:"required"` // 目标版本
+}
+
+// RollbackHandler 回滚接口（POST /api/rollback/:funcName）
+func RollbackHandler(reg *registry.Registry) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		funcName := c.Param("funcName")
+		var req RollbackRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		if err := reg.Rollback(funcName, req.Alias, req.TargetVersion); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"status":        "success",
+			"funcName":      funcName,
+			"alias":         req.Alias,
+			"targetVersion": req.TargetVersion,
+			"accessUrl":     fmt.Sprintf("http://%s.%s.func.local", req.Alias, funcName),
+		})
+	}
+}
+
+// ProxyHandler 路由转发处理器：解析子域名，转发请求到 workerd 进程
+func ProxyHandler(reg *registry.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// 提取子域名（如 foo.func.local）
+		subdomain := r.Host
+		if subdomain == "" {
+			http.Error(w, "missing Host header", http.StatusBadRequest)
+			return
+		}
+
+		// 查询函数元数据
+		meta, exists := reg.GetBySubdomain(subdomain)
+		if !exists {
+			// 子域名未找到时，尝试通过别名查询
+			meta, exists = reg.GetByAlias(subdomain)
+			if !exists {
+				http.Error(w, "function not found", http.StatusNotFound)
+				return
+			}
+		}
+
+		// 转发请求到 workerd 进程（本地端口）
+		targetUrl, err := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", meta.Workerd.Port))
+		if err != nil {
+			http.Error(w, "invalid target url", http.StatusInternalServerError)
+			return
+		}
+		proxy := httputil.NewSingleHostReverseProxy(targetUrl)
+		proxy.ServeHTTP(w, r)
 	}
 }

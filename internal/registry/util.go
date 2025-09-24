@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -39,18 +38,6 @@ func waitPortListening(host string, port int) error {
 			}
 		}
 	}
-}
-
-// genWorkerdEnv 生成 workerd 环境变量配置（Cap'n Proto 格式）
-func genWorkerdEnv(env map[string]string) string {
-	if len(env) == 0 {
-		return ""
-	}
-	var envLines []string
-	for k, v := range env {
-		envLines = append(envLines, fmt.Sprintf(`(name = "%s", value = "%s")`, k, v))
-	}
-	return strings.Join(envLines, ",\n")
 }
 
 // getStorageDir 获取存储目录（配置/代码/日志）
