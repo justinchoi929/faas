@@ -36,7 +36,7 @@ type FunctionMetadata struct {
 	Code       string        `gorm:"type:text;not null" json:"code"`         // 存储函数代码
 	EnvVars    JSONMap       `gorm:"type:text;default:'{}'" json:"env_vars"` // 环境变量（JSON存储）
 	Version    string        `gorm:"index;not null" json:"version"`          // 版本号（必填）
-	Alias      string        `gorm:"uniqueIndex" json:"alias"`
+	Alias      string        `json:"alias"`
 	Workerd    WorkerdConfig `gorm:"type:json;default:'{}'" json:"workerd"` // 嵌套结构体，会被展开为WorkerdPort, WorkerdConfPath等字段
 }
 
@@ -279,7 +279,7 @@ func (r *Registry) RegisterOrUpdate(meta *FunctionMetadata) error {
 }
 
 // Rollback 别名回滚
-func (r *Registry) Rollback(funcName, alias, targetVersion string) error {
+func (r *Registry) Rollback(alias *string, funcName, targetVersion string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -297,17 +297,21 @@ func (r *Registry) Rollback(funcName, alias, targetVersion string) error {
 	}
 
 	// 后续别名更新逻辑
-	aliasKey := fmt.Sprintf("%s:%s", funcName, alias)
-	oldVersion, exists := r.aliasMap[aliasKey]
-	if exists {
-		oldMetaKey := fmt.Sprintf("%s:%s", funcName, oldVersion)
-		if _, ok := r.versionMap[oldMetaKey]; ok {
-			delete(r.subdomainMap, r.generateAliasSubdomain(funcName, alias))
+	if *alias != "" {
+		aliasKey := fmt.Sprintf("%s:%s", funcName, *alias)
+		oldVersion, exists := r.aliasMap[aliasKey]
+		if exists {
+			oldMetaKey := fmt.Sprintf("%s:%s", funcName, oldVersion)
+			if _, ok := r.versionMap[oldMetaKey]; ok {
+				delete(r.subdomainMap, r.generateAliasSubdomain(funcName, *alias))
+			}
 		}
+		r.aliasMap[aliasKey] = targetVersion
+	} else {
+		*alias = targetMeta.Alias
 	}
-
-	r.aliasMap[aliasKey] = targetVersion
-	aliasSubdomain := r.generateAliasSubdomain(funcName, alias)
+	r.funcs[funcName] = targetMeta
+	aliasSubdomain := r.generateAliasSubdomain(funcName, *alias)
 	r.subdomainMap[aliasSubdomain] = targetKey
 
 	return nil

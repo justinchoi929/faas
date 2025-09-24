@@ -86,8 +86,8 @@ func DeployHandler(reg *registry.Registry) gin.HandlerFunc {
 
 // RollbackRequest 回滚请求体
 type RollbackRequest struct {
-	Alias         string `json:"alias" binding:"required"`          // 要修改的别名（如latest）
-	TargetVersion string `json:"target_version" binding:"required"` // 目标版本
+	Alias   string `json:"alias"`                      // 要修改的别名（如latest）
+	Version string `json:"version" binding:"required"` // 目标版本
 }
 
 // RollbackHandler 回滚接口（POST /api/rollback/:funcName）
@@ -100,7 +100,7 @@ func RollbackHandler(reg *registry.Registry) gin.HandlerFunc {
 			return
 		}
 
-		if err := reg.Rollback(funcName, req.Alias, req.TargetVersion); err != nil {
+		if err := reg.Rollback(&req.Alias, funcName, req.Version); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -109,8 +109,8 @@ func RollbackHandler(reg *registry.Registry) gin.HandlerFunc {
 			"status":        "success",
 			"funcName":      funcName,
 			"alias":         req.Alias,
-			"targetVersion": req.TargetVersion,
-			"accessUrl":     fmt.Sprintf("http://%s.%s.func.local", req.Alias, funcName),
+			"targetVersion": req.Version,
+			"accessUrl":     fmt.Sprintf("http://%s.%s.func.local", req.Version, funcName),
 		})
 	}
 }
