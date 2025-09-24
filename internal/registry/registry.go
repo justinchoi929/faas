@@ -264,11 +264,8 @@ func (r *Registry) RegisterOrUpdate(meta *FunctionMetadata) error {
 	}
 
 	// 存储元数据
-	now := time.Now()
-	if _, exists := r.funcs[meta.Name]; !exists {
-		meta.CreatedAt = now
-	}
-	meta.UpdatedAt = now
+	r.funcs[meta.Name] = meta
+	meta.UpdatedAt = time.Now()
 	if err := r.db.Save(meta).Error; err != nil { // gorm.Save会自动判断新增/更新
 		return fmt.Errorf("save to db: %w", err)
 	}

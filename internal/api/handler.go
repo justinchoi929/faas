@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -130,8 +131,12 @@ func ProxyHandler(reg *registry.Registry) http.HandlerFunc {
 			// 子域名未找到时，尝试通过别名查询
 			meta, exists = reg.GetByAlias(subdomain)
 			if !exists {
-				http.Error(w, "function not found", http.StatusNotFound)
-				return
+				// latest 情况
+				meta, exists = reg.GetByName(strings.Split(subdomain, ".")[0])
+				if !exists {
+					http.Error(w, "function not found", http.StatusNotFound)
+					return
+				}
 			}
 		}
 
