@@ -36,7 +36,7 @@ type FunctionMetadata struct {
 	Code       string        `gorm:"type:text;not null" json:"code"`         // 存储函数代码
 	EnvVars    JSONMap       `gorm:"type:text;default:'{}'" json:"env_vars"` // 环境变量（JSON存储）
 	Version    string        `gorm:"index;not null" json:"version"`          // 版本号（必填）
-	Alias      string        `json:"alias"`
+	Alias      string        `gorm:"uniqueIndex" json:"alias"`
 	Workerd    WorkerdConfig `gorm:"type:json;default:'{}'" json:"workerd"` // 嵌套结构体，会被展开为WorkerdPort, WorkerdConfPath等字段
 }
 
