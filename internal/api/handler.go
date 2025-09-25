@@ -1,14 +1,16 @@
 package api
 
 import (
-	"faas/internal/registry" // 替换为实际模块路径
+	"faas/internal/registry"
+	"faas/internal/util"
 	"fmt"
-	"github.com/gin-gonic/gin"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 // DeployRequest 部署请求体
@@ -139,6 +141,29 @@ func ProxyHandler(reg *registry.Registry) http.HandlerFunc {
 				}
 			}
 		}
+
+		// 检查进程状态并更新访问时间
+		reg.Mu.Lock()
+		if meta.Status == "suspended" {
+			// 唤醒进程：重新分配端口
+			freePort, err := util.GetFreePort()
+			if err != nil {
+				reg.Mu.Unlock()
+				http.Error(w, "failed to get free port", http.StatusInternalServerError)
+				return
+			}
+			meta.Workerd.Port = freePort
+
+			// 启动进程
+			if err := reg.StartWorkerd(meta); err != nil {
+				reg.Mu.Unlock()
+				http.Error(w, "failed to wake up function", http.StatusInternalServerError)
+				return
+			}
+			meta.Status = "running"
+		}
+		meta.LastAccessed = time.Now()
+		reg.Mu.Unlock()
 
 		// 转发请求到 workerd 进程（本地端口）
 		targetUrl, err := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", meta.Workerd.Port))

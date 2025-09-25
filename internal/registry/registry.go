@@ -5,9 +5,8 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"faas/internal/util"
 	"fmt"
-	"gorm.io/driver/sqlite"
-	"gorm.io/gorm"
 	"io"
 	"os"
 	"os/exec"
@@ -16,6 +15,9 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 // WorkerdConfig workerd 进程配置
@@ -29,27 +31,30 @@ type WorkerdConfig struct {
 
 // FunctionMetadata 函数元数据
 type FunctionMetadata struct {
-	gorm.Model               // 内置字段：ID, CreatedAt, UpdatedAt, DeletedAt
-	Name       string        `gorm:"index;not null" json:"name"` // 函数名
-	Subdomain  string        `gorm:"uniqueIndex;not null" json:"subdomain"`
-	Runtime    string        `gorm:"not null" json:"runtime"`
-	Code       string        `gorm:"type:text;not null" json:"code"`         // 存储函数代码
-	EnvVars    JSONMap       `gorm:"type:text;default:'{}'" json:"env_vars"` // 环境变量（JSON存储）
-	Version    string        `gorm:"index;not null" json:"version"`          // 版本号（必填）
-	Alias      string        `json:"alias"`
-	Workerd    WorkerdConfig `gorm:"type:json;default:'{}'" json:"workerd"` // 嵌套结构体，会被展开为WorkerdPort, WorkerdConfPath等字段
+	gorm.Model                 // 内置字段：ID, CreatedAt, UpdatedAt, DeletedAt
+	Name         string        `gorm:"index;not null" json:"name"` // 函数名
+	Subdomain    string        `gorm:"uniqueIndex;not null" json:"subdomain"`
+	Runtime      string        `gorm:"not null" json:"runtime"`
+	Code         string        `gorm:"type:text;not null" json:"code"`         // 存储函数代码
+	EnvVars      JSONMap       `gorm:"type:text;default:'{}'" json:"env_vars"` // 环境变量（JSON存储）
+	Version      string        `gorm:"index;not null" json:"version"`          // 版本号（必填）
+	Alias        string        `json:"alias"`
+	Workerd      WorkerdConfig `gorm:"type:json;default:'{}'" json:"workerd"` // 嵌套结构体，会被展开为WorkerdPort, WorkerdConfPath等字段
+	Status       string        `json:"status"`                                // 进程状态: running/suspended
+	LastAccessed time.Time     `json:"last_accessed"`                         // 最后访问时间
 }
 
 // Registry 函数注册表（单例）
 type Registry struct {
 	funcs        map[string]*FunctionMetadata // 函数名 -> 元数据
 	subdomainMap map[string]string            // 子域名 -> 函数名
-	mu           sync.RWMutex                 // 并发安全锁
+	Mu           sync.RWMutex                 // 并发安全锁
 	StorageDir   string                       // 存储目录
 	workerdBin   string                       // workerd 二进制路径
 	versionMap   map[string]*FunctionMetadata // funcName:version -> 元数据（唯一标识版本）
 	aliasMap     map[string]string            // funcName:alias -> version（别名指向版本）
 	db           *gorm.DB                     // 数据库连接
+	ticker       *time.Ticker                 // 超时检查器
 }
 
 var defaultRegistry *Registry
@@ -58,7 +63,7 @@ var defaultRegistry *Registry
 func Default(workerdBin string) *Registry {
 	if defaultRegistry == nil {
 		// 初始化数据库
-		db, err := gorm.Open(sqlite.Open(filepath.Join(getStorageDir(), "faas.db")), &gorm.Config{})
+		db, err := gorm.Open(sqlite.Open(filepath.Join(util.GetStorageDir(), "faas.db")), &gorm.Config{})
 		if err != nil {
 			panic(fmt.Sprintf("failed to connect database: %v", err))
 		}
@@ -72,12 +77,15 @@ func Default(workerdBin string) *Registry {
 		defaultRegistry = &Registry{
 			funcs:        make(map[string]*FunctionMetadata),
 			subdomainMap: make(map[string]string),
-			StorageDir:   getStorageDir(),
+			StorageDir:   util.GetStorageDir(),
 			workerdBin:   workerdBin,
 			versionMap:   make(map[string]*FunctionMetadata),
 			aliasMap:     make(map[string]string),
 			db:           db,
+			ticker:       time.NewTicker(1 * time.Minute),
 		}
+
+		go defaultRegistry.checkTimeouts()
 
 		// 从数据库加载已保存的函数
 		err = defaultRegistry.loadFromDB()
@@ -139,7 +147,7 @@ const config :Workerd.Config = (
 }
 
 // 启动/停止 workerd 进程
-func (r *Registry) startWorkerd(meta *FunctionMetadata) error {
+func (r *Registry) StartWorkerd(meta *FunctionMetadata) error {
 	// 生成配置/代码文件
 	if err := r.generateWorkerdFiles(meta); err != nil {
 		return err
@@ -165,7 +173,7 @@ func (r *Registry) startWorkerd(meta *FunctionMetadata) error {
 	meta.Workerd.Pid = cmd.Process.Pid
 
 	// 等待端口监听成功
-	if err := waitPortListening("127.0.0.1", meta.Workerd.Port); err != nil {
+	if err := util.WaitPortListening("127.0.0.1", meta.Workerd.Port); err != nil {
 		cmd.Process.Kill() // 启动失败，清理进程
 		return fmt.Errorf("wait port: %v, stderr: %s", err, stderrBuf.String())
 	}
@@ -209,14 +217,15 @@ func (r *Registry) stopWorkerd(meta *FunctionMetadata) error {
 		return fmt.Errorf("wait exit: %w", err)
 	}
 
+	meta.Workerd.Port = 0
 	meta.Workerd.Pid = 0
 	return nil
 }
 
 // RegisterOrUpdate 注册/更新函数
 func (r *Registry) RegisterOrUpdate(meta *FunctionMetadata) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.Mu.Lock()
+	defer r.Mu.Unlock()
 
 	// 更新 latest 指向
 	r.aliasMap[fmt.Sprintf("%s:latest", meta.Name)] = meta.Version
@@ -225,14 +234,14 @@ func (r *Registry) RegisterOrUpdate(meta *FunctionMetadata) error {
 	versionKey := fmt.Sprintf("%s:%s", meta.Name, meta.Version)
 
 	// 分配空闲端口
-	freePort, err := getFreePort()
+	freePort, err := util.GetFreePort()
 	if err != nil {
 		return fmt.Errorf("get free port: %w", err)
 	}
 	meta.Workerd.Port = freePort
 
 	// 启动新版本进程（不影响旧版本）
-	if err := r.startWorkerd(meta); err != nil {
+	if err := r.StartWorkerd(meta); err != nil {
 		return fmt.Errorf("start new version: %w", err)
 	}
 
@@ -283,8 +292,8 @@ func (r *Registry) RegisterOrUpdate(meta *FunctionMetadata) error {
 
 // Rollback 别名回滚
 func (r *Registry) Rollback(alias *string, funcName, targetVersion string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.Mu.Lock()
+	defer r.Mu.Unlock()
 
 	targetKey := fmt.Sprintf("%s:%s", funcName, targetVersion)
 	targetMeta, exists := r.versionMap[targetKey]
@@ -294,7 +303,7 @@ func (r *Registry) Rollback(alias *string, funcName, targetVersion string) error
 
 	// 若目标版本进程未启动，尝试启动
 	if targetMeta.Workerd.Pid == 0 {
-		if err := r.startWorkerd(targetMeta); err != nil {
+		if err := r.StartWorkerd(targetMeta); err != nil {
 			return fmt.Errorf("start target version: %w", err)
 		}
 	}
@@ -322,8 +331,8 @@ func (r *Registry) Rollback(alias *string, funcName, targetVersion string) error
 
 // 从数据库加载函数元数据并启动进程
 func (r *Registry) loadFromDB() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.Mu.Lock()
+	defer r.Mu.Unlock()
 
 	var metas []*FunctionMetadata
 	if err := r.db.Where("deleted_at IS NULL").Find(&metas).Error; // 关键修复：排除已删除记录
@@ -335,14 +344,14 @@ func (r *Registry) loadFromDB() error {
 	for _, meta := range metas {
 		// 重置端口（避免重启后端口冲突）
 		meta.Workerd.Port = 0
-		freePort, err := getFreePort()
+		freePort, err := util.GetFreePort()
 		if err != nil {
 			fmt.Printf("failed to get free port for function %s: %v\n", meta.Name, err)
 			continue
 		}
 		meta.Workerd.Port = freePort
 		// 重新生成配置文件并启动进程
-		if err := r.startWorkerd(meta); err != nil {
+		if err := r.StartWorkerd(meta); err != nil {
 			// 记录启动失败的函数，但继续加载其他函数
 			fmt.Printf("failed to restart function %s: %v\n", meta.Name, err)
 			continue
@@ -368,6 +377,9 @@ func (r *Registry) loadFromDB() error {
 			latestVersions[meta.Name] = meta.Version // 记录最新版本
 		}
 
+		meta.Status = "suspended" // 重启后默认挂起
+		meta.LastAccessed = time.Time{}
+
 		r.db.Save(meta)
 	}
 
@@ -388,8 +400,8 @@ func (r *Registry) loadFromDB() error {
 }
 
 func (r *Registry) DeleteVersion(funcName, version string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.Mu.Lock()
+	defer r.Mu.Unlock()
 
 	versionKey := fmt.Sprintf("%s:%s", funcName, version)
 	meta, exists := r.versionMap[versionKey]
@@ -425,8 +437,8 @@ func (r *Registry) DeleteVersion(funcName, version string) error {
 
 // 辅助方法：查询函数
 func (r *Registry) GetBySubdomain(subdomain string) (*FunctionMetadata, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.Mu.RLock()
+	defer r.Mu.RUnlock()
 
 	versionKey, exists := r.subdomainMap[subdomain]
 	if !exists {
@@ -437,23 +449,23 @@ func (r *Registry) GetBySubdomain(subdomain string) (*FunctionMetadata, bool) {
 }
 
 func (r *Registry) GetByName(funcName string) (*FunctionMetadata, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.Mu.RLock()
+	defer r.Mu.RUnlock()
 	meta, exists := r.funcs[funcName]
 	return meta, exists
 }
 
 func (r *Registry) GetByVersion(funcName, version string) (*FunctionMetadata, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.Mu.RLock()
+	defer r.Mu.RUnlock()
 	key := fmt.Sprintf("%s:%s", funcName, version)
 	meta, exists := r.versionMap[key]
 	return meta, exists
 }
 
 func (r *Registry) GetByAlias(subdomain string) (*FunctionMetadata, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.Mu.RLock()
+	defer r.Mu.RUnlock()
 	var alias string
 	var funcName string
 	parts := strings.Split(subdomain, ".")
@@ -478,6 +490,26 @@ func (r *Registry) generateVersionSubdomain(funcName, version string) string {
 // 生成别名子域名（如 latest.foo.func.local）
 func (r *Registry) generateAliasSubdomain(funcName, alias string) string {
 	return fmt.Sprintf("%s.%s.func.local", alias, funcName)
+}
+
+// 检查超时函数
+func (r *Registry) checkTimeouts() {
+	for range r.ticker.C {
+		r.Mu.Lock()
+		for _, meta := range r.funcs {
+			if meta.Status == "running" &&
+				time.Since(meta.LastAccessed) > 5*time.Minute {
+				// 5分钟无访问，挂起进程
+				if err := r.stopWorkerd(meta); err != nil {
+					fmt.Printf("failed to suspend %s:%s %v\n", meta.Name, meta.Version, err)
+					continue
+				}
+				meta.Status = "suspended"
+				fmt.Printf("suspended %s:%s due to inactivity\n", meta.Name, meta.Version)
+			}
+		}
+		r.Mu.Unlock()
+	}
 }
 
 // 生成环境变量
