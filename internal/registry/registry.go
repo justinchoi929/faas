@@ -496,7 +496,10 @@ func (r *Registry) generateAliasSubdomain(funcName, alias string) string {
 func (r *Registry) checkTimeouts() {
 	for range r.ticker.C {
 		r.Mu.Lock()
-		for _, meta := range r.funcs {
+		for _, meta := range r.versionMap {
+			if meta.Version == r.funcs[meta.Name].Version {
+				continue
+			}
 			if meta.Status == "running" &&
 				time.Since(meta.LastAccessed) > 5*time.Minute {
 				// 5分钟无访问，挂起进程
