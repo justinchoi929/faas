@@ -144,7 +144,7 @@ func ProxyHandler(reg *registry.Registry) http.HandlerFunc {
 
 		// 检查进程状态并更新访问时间
 		reg.Mu.Lock()
-		if meta.Status == "suspended" {
+		if meta.Status == "" || meta.Status == "suspended" {
 			// 唤醒进程：重新分配端口
 			freePort, err := util.GetFreePort()
 			if err != nil {
