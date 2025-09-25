@@ -109,7 +109,10 @@ const config :Workerd.Config = (
       name = "%s",
       worker = (
         serviceWorkerScript = embed "%s",
-        compatibilityDate = "2024-05-01"
+        compatibilityDate = "2024-05-01",
+		bindings = [
+          %s
+        ]
       )
     )
   ],
@@ -122,7 +125,7 @@ const config :Workerd.Config = (
     )
   ]
 );
-`, meta.Name, codeFile, meta.Workerd.Port, meta.Name)
+`, meta.Name, codeFile, generateWorkerdEnv(meta), meta.Workerd.Port, meta.Name)
 
 	if err := os.WriteFile(confPath, []byte(confContent), 0644); err != nil {
 		return fmt.Errorf("write conf: %w", err)
@@ -475,6 +478,21 @@ func (r *Registry) generateVersionSubdomain(funcName, version string) string {
 // 生成别名子域名（如 latest.foo.func.local）
 func (r *Registry) generateAliasSubdomain(funcName, alias string) string {
 	return fmt.Sprintf("%s.%s.func.local", alias, funcName)
+}
+
+// 生成环境变量
+func generateWorkerdEnv(meta *FunctionMetadata) string {
+	if meta.EnvVars == nil || len(meta.EnvVars) == 0 {
+		return ""
+	}
+	var bindings []string
+	for key, value := range meta.EnvVars {
+		escapedValue := strings.ReplaceAll(value, `"`, `\"`)
+		escapedValue = strings.ReplaceAll(escapedValue, "\n", "\\n")
+		bindings = append(bindings,
+			fmt.Sprintf(`( name = "%s", text = "%s" )`, key, escapedValue))
+	}
+	return strings.Join(bindings, ",\n")
 }
 
 // 实现gorm.Valuer接口，将WorkerdConfig转换为JSON字符串
