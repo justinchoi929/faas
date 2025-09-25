@@ -182,7 +182,7 @@ curl -X POST "http://your-host/api/deploy/test" \
   -H "Content-Type: application/json" \
   -d '{
     "runtime": "js",
-    "code": "addEventListener(\"fetch\",(e)=>{e.respondWith(handle(e.request))});async function handle(r){try{const res=await fetch(\"http://www.baidu.com\");if(!res.ok)throw new Error(`HTTP ${res.status}`);const html=await res.text();return new Response(html,{headers:{\'Content-Type\':\'text/html\'}})}catch(err){return new Response(JSON.stringify({err:err.message}),{status:500,headers:{\'Content-Type\':\'application/json\'}})}}",
+    "code": "addEventListener(\"fetch\", (e) => { e.respondWith(handle(e.request)); }); async function handle(r) { try { const res = await fetch(\"http://www.baidu.com\"); if (!res.ok) throw new Error(`HTTP ${res.status}`); const html = await res.text(); return new Response(html, { headers: { \"Content-Type\": \"text/html\" } }); } catch (err) { return new Response(JSON.stringify({ err: err.message }), { status: 500, headers: { \"Content-Type\": \"application/json\" } }); } }",
     "version": "v1"
   }'
 ```
@@ -244,21 +244,21 @@ suspended test:v1 due to inactivity
 
 整体项目用 Go 实现，完成了基础的核心功能：
 
-1. **路由转发：**通过主端口提供路由转发服务（自定义 ProxyHandler），可基于子域名访问不同的函数及版本
-2. **运行时：**直接使用 workerd
-3. **多函数支持：**每个函数通过函数名作区分，在数据结构 `Lastest` (map类型)中以函数名作为 `key` ，latest版本函数元信息作为 `value` 存储
-4. **网络访问：** workerd 运行时支持对网络进行访问
+1. 路由转发：通过主端口提供路由转发服务（自定义 ProxyHandler），可基于子域名访问不同的函数及版本
+2. 运行时：直接使用 workerd
+3. 多函数支持：每个函数通过函数名作区分，在数据结构 `Lastest` (map类型)中以函数名作为 `key` ，latest版本函数元信息作为 `value` 存储
+4. 网络访问： workerd 运行时支持对网络进行访问
 
 扩展功能：
 
-1. **鉴权：** 硬编码
-2. **持久化：**使用 `SQLite`  持久化保存函数的代码与元数据。平台重启后通过初始化函数恢复所有已部署函数。
-3. **多版本部署：**每个函数通过唯一版本进行管理，版本通过部署时请求体中 `version` 参数确定，若没带参数则自动生成唯一时间戳作为版本信息，通过 `函数名:版本` 作为 `key` 存入 `Map` 中，函数元信息作为 `value` 存储，可通过子域名（例如 `7cc187.foo.func.local`），将函数名和版本进行拼接再查询 Map 得到元信息选择版本，再启动 workerd 进程，别名同理。
-4. **回滚**：部署时在数据结构 `Lastest` 更新元信息
-5. **环境变量：**在 workerd 配置文件中设置 `bindings` 参数，workerd 会自动注入
-6. **Zero-downtime deploy：**同函数不同版本分别启用一个 workerd 进程
-7. **超时挂起：**在函数部署后，若在自定义时间内没有被调用（通过自定义检查器检查），则会挂起 workerd 进程，等到下次该版本函数被调用才会再次启动进程，latest 即最新的版本则会一直在运行
-8. **查询、停止和删除接口：**添加了一些基础接口
+1. 鉴权： 硬编码
+2. 持久化：使用 `SQLite`  持久化保存函数的代码与元数据。平台重启后通过初始化函数恢复所有已部署函数。
+3. 多版本部署：每个函数通过唯一版本进行管理，版本通过部署时请求体中 `version` 参数确定，若没带参数则自动生成唯一时间戳作为版本信息，通过 `函数名:版本` 作为 `key` 存入 `Map` 中，函数元信息作为 `value` 存储，可通过子域名（例如 `7cc187.foo.func.local`），将函数名和版本进行拼接再查询 Map 得到元信息选择版本，再启动 workerd 进程，别名同理。
+4. 回滚：部署时在数据结构 `Lastest` 更新元信息
+5. 环境变量：在 workerd 配置文件中设置 `bindings` 参数，workerd 会自动注入
+6. Zero-downtime deploy：同函数不同版本分别启用一个 workerd 进程
+7. 超时挂起：在函数部署后，若在自定义时间内没有被调用（通过自定义检查器检查），则会挂起 workerd 进程，等到下次该版本函数被调用才会再次启动进程，latest 即最新的版本则会一直在运行
+8. 查询、停止和删除接口：添加了一些基础接口
 
 ## 问题
 
