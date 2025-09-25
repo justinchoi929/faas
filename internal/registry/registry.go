@@ -51,7 +51,7 @@ type Registry struct {
 	Mu           sync.RWMutex                 // 并发安全锁
 	StorageDir   string                       // 存储目录
 	workerdBin   string                       // workerd 二进制路径
-	versionMap   map[string]*FunctionMetadata // funcName:version -> 元数据（唯一标识版本）
+	VersionMap   map[string]*FunctionMetadata // funcName:version -> 元数据（唯一标识版本）
 	aliasMap     map[string]string            // funcName:alias -> version（别名指向版本）
 	db           *gorm.DB                     // 数据库连接
 	ticker       *time.Ticker                 // 超时检查器
@@ -79,7 +79,7 @@ func Default(workerdBin string) *Registry {
 			subdomainMap: make(map[string]string),
 			StorageDir:   util.GetStorageDir(),
 			workerdBin:   workerdBin,
-			versionMap:   make(map[string]*FunctionMetadata),
+			VersionMap:   make(map[string]*FunctionMetadata),
 			aliasMap:     make(map[string]string),
 			db:           db,
 			ticker:       time.NewTicker(1 * time.Minute),
@@ -264,7 +264,7 @@ func (r *Registry) RegisterOrUpdate(meta *FunctionMetadata) error {
 		// 移除旧别名的子域名映射
 		if exists {
 			oldMetaKey := fmt.Sprintf("%s:%s", meta.Name, oldVersion)
-			if oldMeta, ok := r.versionMap[oldMetaKey]; ok {
+			if oldMeta, ok := r.VersionMap[oldMetaKey]; ok {
 				delete(r.subdomainMap, oldMeta.Subdomain)
 			}
 		}
@@ -284,7 +284,7 @@ func (r *Registry) RegisterOrUpdate(meta *FunctionMetadata) error {
 
 	// 更新内存映射
 	r.Latest[meta.Name] = meta
-	r.versionMap[versionKey] = meta
+	r.VersionMap[versionKey] = meta
 	r.subdomainMap[meta.Subdomain] = versionKey
 
 	return nil
@@ -296,7 +296,7 @@ func (r *Registry) Rollback(alias *string, funcName, targetVersion string) error
 	defer r.Mu.Unlock()
 
 	targetKey := fmt.Sprintf("%s:%s", funcName, targetVersion)
-	targetMeta, exists := r.versionMap[targetKey]
+	targetMeta, exists := r.VersionMap[targetKey]
 	if !exists {
 		return errors.New("target version not found")
 	}
@@ -314,7 +314,7 @@ func (r *Registry) Rollback(alias *string, funcName, targetVersion string) error
 		oldVersion, exists := r.aliasMap[aliasKey]
 		if exists {
 			oldMetaKey := fmt.Sprintf("%s:%s", funcName, oldVersion)
-			if _, ok := r.versionMap[oldMetaKey]; ok {
+			if _, ok := r.VersionMap[oldMetaKey]; ok {
 				delete(r.subdomainMap, r.generateAliasSubdomain(funcName, *alias))
 			}
 		}
@@ -334,7 +334,7 @@ func (r *Registry) StopFunction(funcName, version string) error {
 	defer r.Mu.Unlock()
 
 	targetKey := fmt.Sprintf("%s:%s", funcName, version)
-	meta, exists := r.versionMap[targetKey]
+	meta, exists := r.VersionMap[targetKey]
 	if !exists {
 		return errors.New("function not found")
 	}
@@ -355,7 +355,7 @@ func (r *Registry) DeleteFunction(funcName string) error {
 	defer r.Mu.Unlock()
 
 	var versionsToDelete []*FunctionMetadata
-	for _, meta := range r.versionMap {
+	for _, meta := range r.VersionMap {
 		if meta.Name == funcName {
 			versionsToDelete = append(versionsToDelete, meta)
 		}
@@ -385,7 +385,7 @@ func (r *Registry) DeleteFunction(funcName string) error {
 
 		// 从versionMap移除
 		versionKey := fmt.Sprintf("%s:%s", funcName, meta.Version)
-		delete(r.versionMap, versionKey)
+		delete(r.VersionMap, versionKey)
 	}
 
 	// 清理latest别名
@@ -410,7 +410,7 @@ func (r *Registry) DeleteFunctionVersion(funcName, version string) error {
 	defer r.Mu.Unlock()
 
 	versionKey := fmt.Sprintf("%s:%s", funcName, version)
-	meta, exists := r.versionMap[versionKey]
+	meta, exists := r.VersionMap[versionKey]
 	if !exists {
 		return errors.New("function version not found")
 	}
@@ -437,12 +437,12 @@ func (r *Registry) DeleteFunctionVersion(funcName, version string) error {
 	}
 
 	// 从内存映射中删除
-	delete(r.versionMap, versionKey)
+	delete(r.VersionMap, versionKey)
 
 	// 如果删除的是最新版本，需要重新计算最新版本
 	if r.Latest[funcName] != nil && r.Latest[funcName].Version == version {
 		var latestMeta *FunctionMetadata
-		for _, m := range r.versionMap {
+		for _, m := range r.VersionMap {
 			if m.Name == funcName && (latestMeta == nil || m.UpdatedAt.After(latestMeta.UpdatedAt)) {
 				latestMeta = m
 			}
@@ -493,7 +493,7 @@ func (r *Registry) loadFromDB() error {
 		}
 		// 重建 versionMap
 		versionKey := fmt.Sprintf("%s:%s", meta.Name, meta.Version)
-		r.versionMap[versionKey] = meta
+		r.VersionMap[versionKey] = meta
 
 		// 重建 subdomainMap
 		r.subdomainMap[meta.Subdomain] = versionKey
@@ -525,7 +525,7 @@ func (r *Registry) loadFromDB() error {
 		// 重建 latest 别名的子域名映射
 		latestSubdomain := r.generateAliasSubdomain(funcName, "latest")
 		latestVersionKey := fmt.Sprintf("%s:%s", funcName, latestVersion)
-		if _, exists := r.versionMap[latestVersionKey]; exists {
+		if _, exists := r.VersionMap[latestVersionKey]; exists {
 			r.subdomainMap[latestSubdomain] = latestVersionKey
 		}
 	}
@@ -539,7 +539,7 @@ func (r *Registry) DeleteVersion(funcName, version string) error {
 	defer r.Mu.Unlock()
 
 	versionKey := fmt.Sprintf("%s:%s", funcName, version)
-	meta, exists := r.versionMap[versionKey]
+	meta, exists := r.VersionMap[versionKey]
 	if !exists {
 		return errors.New("version not found")
 	}
@@ -555,7 +555,7 @@ func (r *Registry) DeleteVersion(funcName, version string) error {
 	}
 
 	// 清理映射
-	delete(r.versionMap, versionKey)
+	delete(r.VersionMap, versionKey)
 	delete(r.subdomainMap, meta.Subdomain)
 
 	// 清理别名
@@ -579,7 +579,7 @@ func (r *Registry) GetBySubdomain(subdomain string) (*FunctionMetadata, bool) {
 	if !exists {
 		return nil, false
 	}
-	meta, exists := r.versionMap[versionKey]
+	meta, exists := r.VersionMap[versionKey]
 	return meta, exists
 }
 
@@ -594,7 +594,7 @@ func (r *Registry) GetByVersion(funcName, version string) (*FunctionMetadata, bo
 	r.Mu.RLock()
 	defer r.Mu.RUnlock()
 	key := fmt.Sprintf("%s:%s", funcName, version)
-	meta, exists := r.versionMap[key]
+	meta, exists := r.VersionMap[key]
 	return meta, exists
 }
 
@@ -631,7 +631,7 @@ func (r *Registry) generateAliasSubdomain(funcName, alias string) string {
 func (r *Registry) checkTimeouts() {
 	for range r.ticker.C {
 		r.Mu.Lock()
-		for _, meta := range r.versionMap {
+		for _, meta := range r.VersionMap {
 			if meta.Version == r.Latest[meta.Name].Version {
 				continue
 			}

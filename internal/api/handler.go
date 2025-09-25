@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -186,6 +187,27 @@ func DeleteVersionHandler(reg *registry.Registry) gin.HandlerFunc {
 			"funcName": funcName,
 			"version":  req.Version,
 			"message":  "function version deleted successfully",
+		})
+	}
+}
+
+// ListVersionsHandler list 所有 version（GET /api/list/:funcName）
+func ListVersionsHandler(reg *registry.Registry) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		funcName := c.Param("funcName")
+		var versions []string
+		reg.Mu.RLock()
+		for k, meta := range reg.VersionMap {
+			parts := strings.SplitN(k, ":", 2)
+			if len(parts) == 2 && parts[0] == funcName {
+				versions = append(versions, meta.Version)
+			}
+		}
+		reg.Mu.RUnlock()
+		sort.Strings(versions)
+		c.JSON(http.StatusOK, gin.H{
+			"funcName": funcName,
+			"versions": versions,
 		})
 	}
 }

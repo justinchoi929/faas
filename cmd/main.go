@@ -33,11 +33,12 @@ func main() {
 	apiGroup := ginEngine.Group("/api")
 	//apiGroup.Use(api.AuthMiddleware()) // 鉴权中间件
 	{
+		apiGroup.GET("/list/:funcName", api.ListVersionsHandler(reg))
 		apiGroup.POST("/deploy/:funcName", api.DeployHandler(reg))
 		apiGroup.POST("/rollback/:funcName", api.RollbackHandler(reg))
 		apiGroup.POST("/stop/:funcName", api.StopHandler(reg))
 		apiGroup.POST("/delete/:funcName", api.DeleteFunctionHandler(reg))
-		apiGroup.POST("/delete/:funcName", api.DeleteVersionHandler(reg))
+		apiGroup.POST("/deleteVersion/:funcName", api.DeleteVersionHandler(reg))
 	}
 
 	go func() {
