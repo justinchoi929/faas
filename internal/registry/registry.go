@@ -46,7 +46,7 @@ type FunctionMetadata struct {
 
 // Registry 函数注册表（单例）
 type Registry struct {
-	funcs        map[string]*FunctionMetadata // 函数名 -> 元数据
+	Latest       map[string]*FunctionMetadata // 函数名 -> 元数据
 	subdomainMap map[string]string            // 子域名 -> 函数名
 	Mu           sync.RWMutex                 // 并发安全锁
 	StorageDir   string                       // 存储目录
@@ -75,7 +75,7 @@ func Default(workerdBin string) *Registry {
 
 		// 创建注册表实例
 		defaultRegistry = &Registry{
-			funcs:        make(map[string]*FunctionMetadata),
+			Latest:       make(map[string]*FunctionMetadata),
 			subdomainMap: make(map[string]string),
 			StorageDir:   util.GetStorageDir(),
 			workerdBin:   workerdBin,
@@ -246,7 +246,7 @@ func (r *Registry) RegisterOrUpdate(meta *FunctionMetadata) error {
 	}
 
 	// 停止旧函数（更新场景）
-	//if oldMeta, exists := r.funcs[meta.Name]; exists {
+	//if oldMeta, exists := r.Latest[meta.Name]; exists {
 	//	if err := r.stopWorkerd(oldMeta); err != nil {
 	//		return fmt.Errorf("stop old function: %w", err)
 	//	}
@@ -276,14 +276,14 @@ func (r *Registry) RegisterOrUpdate(meta *FunctionMetadata) error {
 	}
 
 	// 存储元数据
-	r.funcs[meta.Name] = meta
+	r.Latest[meta.Name] = meta
 	meta.UpdatedAt = time.Now()
 	if err := r.db.Save(meta).Error; err != nil { // gorm.Save会自动判断新增/更新
 		return fmt.Errorf("save to db: %w", err)
 	}
 
 	// 更新内存映射
-	r.funcs[meta.Name] = meta
+	r.Latest[meta.Name] = meta
 	r.versionMap[versionKey] = meta
 	r.subdomainMap[meta.Subdomain] = versionKey
 
@@ -322,9 +322,144 @@ func (r *Registry) Rollback(alias *string, funcName, targetVersion string) error
 	} else {
 		*alias = targetMeta.Alias
 	}
-	r.funcs[funcName] = targetMeta
+	r.Latest[funcName] = targetMeta
 	aliasSubdomain := r.generateAliasSubdomain(funcName, *alias)
 	r.subdomainMap[aliasSubdomain] = targetKey
+
+	return nil
+}
+
+func (r *Registry) StopFunction(funcName, version string) error {
+	r.Mu.Lock()
+	defer r.Mu.Unlock()
+
+	targetKey := fmt.Sprintf("%s:%s", funcName, version)
+	meta, exists := r.versionMap[targetKey]
+	if !exists {
+		return errors.New("function not found")
+	}
+	if meta.Status == "suspended" {
+		return errors.New("function has been stopped")
+	}
+
+	if err := r.stopWorkerd(meta); err != nil {
+		return err
+	}
+	meta.Status = "suspended"
+	return r.db.Save(meta).Error
+}
+
+// DeleteFunction 删除整个函数（包括所有版本）
+func (r *Registry) DeleteFunction(funcName string) error {
+	r.Mu.Lock()
+	defer r.Mu.Unlock()
+
+	var versionsToDelete []*FunctionMetadata
+	for _, meta := range r.versionMap {
+		if meta.Name == funcName {
+			versionsToDelete = append(versionsToDelete, meta)
+		}
+	}
+
+	if len(versionsToDelete) == 0 {
+		return errors.New("function not found")
+	}
+
+	// 停止所有版本进程并清理映射
+	for _, meta := range versionsToDelete {
+		// 停止进程
+		if err := r.stopWorkerd(meta); err != nil {
+			return fmt.Errorf("failed to stop version %s: %w", meta.Version, err)
+		}
+
+		// 清理子域名映射
+		delete(r.subdomainMap, meta.Subdomain)
+
+		// 清理别名映射
+		if meta.Alias != "" {
+			aliasKey := fmt.Sprintf("%s:%s", funcName, meta.Alias)
+			delete(r.aliasMap, aliasKey)
+			aliasSubdomain := r.generateAliasSubdomain(funcName, meta.Alias)
+			delete(r.subdomainMap, aliasSubdomain)
+		}
+
+		// 从versionMap移除
+		versionKey := fmt.Sprintf("%s:%s", funcName, meta.Version)
+		delete(r.versionMap, versionKey)
+	}
+
+	// 清理latest别名
+	latestAliasKey := fmt.Sprintf("%s:latest", funcName)
+	delete(r.aliasMap, latestAliasKey)
+	latestSubdomain := r.generateAliasSubdomain(funcName, "latest")
+	delete(r.subdomainMap, latestSubdomain)
+
+	// 从数据库删除所有版本
+	if err := r.db.Where("name = ?", funcName).Delete(&FunctionMetadata{}).Error; err != nil {
+		return fmt.Errorf("database delete failed: %w", err)
+	}
+
+	// 从内存映射移除函数
+	delete(r.Latest, funcName)
+
+	return nil
+}
+
+func (r *Registry) DeleteFunctionVersion(funcName, version string) error {
+	r.Mu.Lock()
+	defer r.Mu.Unlock()
+
+	versionKey := fmt.Sprintf("%s:%s", funcName, version)
+	meta, exists := r.versionMap[versionKey]
+	if !exists {
+		return errors.New("function version not found")
+	}
+
+	// 停止该版本的进程
+	if err := r.stopWorkerd(meta); err != nil {
+		return err
+	}
+
+	// 清理子域名映射
+	delete(r.subdomainMap, meta.Subdomain)
+
+	// 清理别名映射（如果该版本有别名）
+	if meta.Alias != "" {
+		aliasKey := fmt.Sprintf("%s:%s", funcName, meta.Alias)
+		delete(r.aliasMap, aliasKey)
+		aliasSubdomain := r.generateAliasSubdomain(funcName, meta.Alias)
+		delete(r.subdomainMap, aliasSubdomain)
+	}
+
+	// 从数据库删除该版本
+	if err := r.db.Where("name = ? AND version = ?", funcName, version).Delete(&FunctionMetadata{}).Error; err != nil {
+		return err
+	}
+
+	// 从内存映射中删除
+	delete(r.versionMap, versionKey)
+
+	// 如果删除的是最新版本，需要重新计算最新版本
+	if r.Latest[funcName] != nil && r.Latest[funcName].Version == version {
+		var latestMeta *FunctionMetadata
+		for _, m := range r.versionMap {
+			if m.Name == funcName && (latestMeta == nil || m.UpdatedAt.After(latestMeta.UpdatedAt)) {
+				latestMeta = m
+			}
+		}
+		r.Latest[funcName] = latestMeta
+
+		// 更新latest别名映射
+		if latestMeta != nil {
+			latestAliasKey := fmt.Sprintf("%s:latest", funcName)
+			r.aliasMap[latestAliasKey] = latestMeta.Version
+			latestSubdomain := r.generateAliasSubdomain(funcName, "latest")
+			r.subdomainMap[latestSubdomain] = fmt.Sprintf("%s:%s", funcName, latestMeta.Version)
+		} else {
+			// 如果函数已无任何版本，从funcs中移除
+			delete(r.Latest, funcName)
+		}
+	}
 
 	return nil
 }
@@ -371,9 +506,9 @@ func (r *Registry) loadFromDB() error {
 			r.subdomainMap[aliasSubdomain] = versionKey
 		}
 
-		// 重建 funcs 映射
-		if existingMeta, exists := r.funcs[meta.Name]; !exists || meta.UpdatedAt.After(existingMeta.UpdatedAt) {
-			r.funcs[meta.Name] = meta
+		// 重建 Latest 映射
+		if existingMeta, exists := r.Latest[meta.Name]; !exists || meta.UpdatedAt.After(existingMeta.UpdatedAt) {
+			r.Latest[meta.Name] = meta
 			latestVersions[meta.Name] = meta.Version // 记录最新版本
 		}
 
@@ -395,7 +530,7 @@ func (r *Registry) loadFromDB() error {
 		}
 	}
 
-	fmt.Printf("loaded %d functions from database\n", len(r.funcs))
+	fmt.Printf("loaded %d functions from database\n", len(r.Latest))
 	return nil
 }
 
@@ -451,7 +586,7 @@ func (r *Registry) GetBySubdomain(subdomain string) (*FunctionMetadata, bool) {
 func (r *Registry) GetByName(funcName string) (*FunctionMetadata, bool) {
 	r.Mu.RLock()
 	defer r.Mu.RUnlock()
-	meta, exists := r.funcs[funcName]
+	meta, exists := r.Latest[funcName]
 	return meta, exists
 }
 
@@ -497,7 +632,7 @@ func (r *Registry) checkTimeouts() {
 	for range r.ticker.C {
 		r.Mu.Lock()
 		for _, meta := range r.versionMap {
-			if meta.Version == r.funcs[meta.Name].Version {
+			if meta.Version == r.Latest[meta.Name].Version {
 				continue
 			}
 			if meta.Status == "running" &&

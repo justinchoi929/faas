@@ -35,6 +35,9 @@ func main() {
 	{
 		apiGroup.POST("/deploy/:funcName", api.DeployHandler(reg))
 		apiGroup.POST("/rollback/:funcName", api.RollbackHandler(reg))
+		apiGroup.POST("/stop/:funcName", api.StopHandler(reg))
+		apiGroup.POST("/delete/:funcName", api.DeleteFunctionHandler(reg))
+		apiGroup.POST("/delete/:funcName/version", api.DeleteVersionHandler(reg))
 	}
 
 	go func() {

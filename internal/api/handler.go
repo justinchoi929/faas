@@ -117,6 +117,79 @@ func RollbackHandler(reg *registry.Registry) gin.HandlerFunc {
 	}
 }
 
+type StopRequest struct {
+	Version string `json:"version" binding:"required"` // 版本
+}
+
+// StopHandler 回滚接口（POST /api/stop/:funcName）
+func StopHandler(reg *registry.Registry) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		funcName := c.Param("funcName")
+		var req StopRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if err := reg.StopFunction(funcName, req.Version); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"status":   "success",
+			"funcName": funcName,
+			"version":  req.Version,
+			"message":  "function stopped successfully",
+		})
+	}
+}
+
+// DeleteFunctionHandler 删除整个函数接口（POST /api/delete/:funcName）
+func DeleteFunctionHandler(reg *registry.Registry) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		funcName := c.Param("funcName")
+
+		if err := reg.DeleteFunction(funcName); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"status":   "success",
+			"funcName": funcName,
+			"message":  "function and all versions deleted successfully",
+		})
+	}
+}
+
+type DeleteVersionRequest struct {
+	Version string `json:"version" binding:"required"` // 版本
+}
+
+// DeleteVersionHandler 删除函数特定版本接口（POST /api/delete/:funcName/version）
+func DeleteVersionHandler(reg *registry.Registry) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		funcName := c.Param("funcName")
+		var req DeleteVersionRequest
+
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		if err := reg.DeleteFunctionVersion(funcName, req.Version); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"status":   "success",
+			"funcName": funcName,
+			"version":  req.Version,
+			"message":  "function version deleted successfully",
+		})
+	}
+}
+
 // ProxyHandler 路由转发处理器：解析子域名，转发请求到 workerd 进程
 func ProxyHandler(reg *registry.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
